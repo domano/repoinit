@@ -46,16 +46,38 @@ func main() {
 		AutoInit: github.Bool(false),
 	}
 
-	repo, _, err = client.Repositories.Create(ctx, "", repo)
+	repo, resp, err := client.Repositories.Create(ctx, "", repo)
 	if err != nil {
-		log.Fatal("Failed to create repository:", err)
-	}
-	fmt.Printf("Created repository: %s\n", *repo.HTMLURL)
+		if resp != nil && resp.StatusCode == 422 { // HTTP 422 Unprocessable Entity typically means repo exists
+			// Get authenticated user
+			user, _, err := client.Users.Get(ctx, "")
+			if err != nil {
+				log.Fatal("Failed to get user:", err)
+			}
 
-	// Initialize git repository locally
-	if err := execCmd("git", "init"); err != nil {
-		log.Fatal("Failed to init git:", err)
+			// Try to get the existing repo
+			repo, _, err = client.Repositories.Get(ctx, *user.Login, repoName)
+			if err != nil {
+				log.Fatal("Failed to get existing repository:", err)
+			}
+			fmt.Printf("Using existing repository: %s\n", *repo.HTMLURL)
+		} else {
+			log.Fatal("Failed to create repository:", err)
+		}
+	} else {
+		fmt.Printf("Created repository: %s\n", *repo.HTMLURL)
 	}
+
+	// Initialize git repository locally if not already initialized
+	if _, err := os.Stat(".git"); os.IsNotExist(err) {
+		if err := execCmd("git", "init"); err != nil {
+			log.Fatal("Failed to init git:", err)
+		}
+	}
+
+	// Check if remote exists and remove it if it does
+	removeCmd := exec.Command("git", "remote", "remove", "origin")
+	removeCmd.Run() // ignore errors since remote might not exist
 
 	// Add remote
 	remoteURL := fmt.Sprintf("git@github.com:%s.git", *repo.FullName)
@@ -90,8 +112,16 @@ func main() {
 		log.Fatal("Failed to commit:", err)
 	}
 
+	// Get current branch name
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchBytes, err := branchCmd.Output()
+	if err != nil {
+		log.Fatal("Failed to get branch name:", err)
+	}
+	currentBranch := strings.TrimSpace(string(branchBytes))
+
 	// Push
-	if err := execCmd("git", "push", "-u", "origin", "main"); err != nil {
+	if err := execCmd("git", "push", "-u", "origin", currentBranch); err != nil {
 		log.Fatal("Failed to push:", err)
 	}
 
